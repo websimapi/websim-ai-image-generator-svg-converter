@@ -45,6 +45,7 @@ async function handleGenerate() {
   // Show loading
   loadingElement.classList.remove('hidden');
   resultContainer.classList.add('hidden');
+  generateBtn.disabled = true;
   downloadBtn.disabled = true;
   
   try {
@@ -62,11 +63,13 @@ async function handleGenerate() {
     loadingElement.classList.add('hidden');
     resultContainer.classList.remove('hidden');
     downloadBtn.disabled = false;
+    generateBtn.disabled = false;
     
   } catch (error) {
     console.error('Error generating image:', error);
     alert('Error generating image. Please try again.');
     loadingElement.classList.add('hidden');
+    generateBtn.disabled = false;
   }
 }
 
@@ -116,7 +119,7 @@ async function convertToSvg(imageUrl) {
     const bwData = convertToBlackAndWhite(imageData);
     
     // Generate SVG paths
-    const svgContent = generateSvgPaths(bwData, canvas.width, canvas.height);
+    const svgContent = createSimpleSvg(bwData, canvas.width, canvas.height);
     generatedSvg = svgContent;
     
     // Display SVG
@@ -146,16 +149,42 @@ function convertToBlackAndWhite(imageData) {
   return { data: bwData, width, height };
 }
 
-function findPaths(bwData) {
+// Simple function to create SVG from black and white image data
+function createSimpleSvg(bwData, width, height) {
+  const paths = findSimplePaths(bwData);
+  
+  let svgContent = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
+  
+  // Add paths to SVG
+  for (const path of paths) {
+    if (path.length > 5) { // Only keep paths with enough points
+      svgContent += `<path d="${pointsToSvgPath(path)}" fill="black" />`;
+    }
+  }
+  
+  svgContent += '</svg>';
+  return svgContent;
+}
+
+function pointsToSvgPath(points) {
+  if (points.length === 0) return '';
+  
+  let path = `M${points[0].x},${points[0].y}`;
+  
+  for (let i = 1; i < points.length; i++) {
+    path += ` L${points[i].x},${points[i].y}`;
+  }
+  
+  path += ' Z'; // Close the path
+  return path;
+}
+
+function findSimplePaths(bwData) {
   const { data, width, height } = bwData;
   const visited = new Array(width * height).fill(false);
   const paths = [];
   
-  // Directions for traversal: right, down-right, down, down-left, left, up-left, up, up-right
-  const dx = [1, 1, 0, -1, -1, -1, 0, 1];
-  const dy = [0, 1, 1, 1, 0, -1, -1, -1];
-  
-  // Find paths in the image
+  // Find paths in the image using a simple algorithm
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
@@ -165,101 +194,62 @@ function findPaths(bwData) {
         continue;
       }
       
-      // Start a new path
+      // Start a new path with flood fill
       const path = [];
-      const stack = [{x, y}];
+      const queue = [{x, y}];
       visited[idx] = true;
       
       // Add starting point
-      path.push(new Point(x, y));
+      path.push({x, y});
       
-      while (stack.length > 0) {
-        const current = stack.pop();
+      // Find boundary pixels using a simple tracing algorithm
+      const dx = [1, 1, 0, -1, -1, -1, 0, 1];  // Direction vectors
+      const dy = [0, 1, 1, 1, 0, -1, -1, -1];
+      
+      while (queue.length > 0) {
+        const current = queue.shift();
+        let isBoundary = false;
         
-        // Try all 8 directions
+        // Check if this is a boundary pixel by looking at neighbors
         for (let i = 0; i < 8; i++) {
           const nx = current.x + dx[i];
           const ny = current.y + dy[i];
           
-          // Check if in bounds
           if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
             const nidx = ny * width + nx;
             
-            // If pixel is black and not visited
-            if (data[nidx] === 1 && !visited[nidx]) {
+            if (data[nidx] === 0) {
+              // Found a white neighbor, so this is a boundary pixel
+              isBoundary = true;
+            } else if (!visited[nidx]) {
+              // This is a black pixel we haven't visited
               visited[nidx] = true;
-              stack.push({x: nx, y: ny});
-              path.push(new Point(nx, ny));
-              break; // Move in this direction
+              queue.push({x: nx, y: ny});
             }
           }
         }
+        
+        if (isBoundary) {
+          // Only add boundary pixels to the path
+          path.push({x: current.x, y: current.y});
+        }
       }
       
-      if (path.length > 5) { // Only keep paths with enough points
-        paths.push({
-          points: path,
-          isHole: false
-        });
+      // Simplify the path - only keep every Nth point to reduce complexity
+      const simplifiedPath = [];
+      const skipFactor = Math.max(1, Math.floor(path.length / 100)); // Adjust for desired detail
+      
+      for (let i = 0; i < path.length; i += skipFactor) {
+        simplifiedPath.push(path[i]);
+      }
+      
+      if (simplifiedPath.length > 0) {
+        paths.push(simplifiedPath);
       }
     }
   }
   
   return paths;
-}
-
-function generateSvgPaths(bwData, width, height) {
-  // Find all paths in the image
-  const paths = findPaths(bwData);
-  
-  // Process paths to get smooth curves
-  for (const path of paths) {
-    // Process the path with potrace algorithm
-    processPath([path], { 
-      turdsize: 2,
-      turnpolicy: 4,
-      alphamax: 1,
-      opticurve: true,
-      opttolerance: 0.2
-    });
-  }
-  
-  // Generate SVG content
-  let svgContent = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
-  
-  // Add paths to SVG
-  for (const path of paths) {
-    if (path.curve) {
-      const svgPath = curvesToSvgPath(path.curve);
-      svgContent += `<path d="${svgPath}" fill="black" />`;
-    }
-  }
-  
-  svgContent += '</svg>';
-  return svgContent;
-}
-
-function curvesToSvgPath(curve) {
-  let path = '';
-  const n = curve.n;
-  
-  // Start path
-  path += `M${curve.c[curve.n * 3 - 1].x.toFixed(3)},${curve.c[curve.n * 3 - 1].y.toFixed(3)} `;
-  
-  // Add curves
-  for (let i = 0; i < n; i++) {
-    if (curve.tag[i] === 'CURVE') {
-      path += `C${curve.c[i * 3 + 0].x.toFixed(3)},${curve.c[i * 3 + 0].y.toFixed(3)} `;
-      path += `${curve.c[i * 3 + 1].x.toFixed(3)},${curve.c[i * 3 + 1].y.toFixed(3)} `;
-      path += `${curve.c[i * 3 + 2].x.toFixed(3)},${curve.c[i * 3 + 2].y.toFixed(3)} `;
-    } else {
-      path += `L${curve.c[i * 3 + 1].x.toFixed(3)},${curve.c[i * 3 + 1].y.toFixed(3)} `;
-      path += `L${curve.c[i * 3 + 2].x.toFixed(3)},${curve.c[i * 3 + 2].y.toFixed(3)} `;
-    }
-  }
-  
-  path += 'Z';
-  return path;
 }
 
 function handleDownload() {
@@ -280,4 +270,3 @@ function handleDownload() {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
-
