@@ -115,11 +115,8 @@ async function convertToSvg(imageUrl) {
     // Get pixel data
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
-    // Convert to black and white for tracing
-    const bwData = convertToBlackAndWhite(imageData);
-    
-    // Generate SVG paths
-    const svgContent = createSimpleSvg(bwData, canvas.width, canvas.height);
+    // Create a simplified SVG
+    const svgContent = createSimplifiedSvg(imageData, canvas.width, canvas.height);
     generatedSvg = svgContent;
     
     // Display SVG
@@ -128,128 +125,47 @@ async function convertToSvg(imageUrl) {
   } catch (error) {
     console.error('Error converting to SVG:', error);
     svgContainer.innerHTML = '<p>Error converting to SVG. Please try again.</p>';
+    // Ensure we're not stuck in loading state
+    loadingElement.classList.add('hidden');
+    resultContainer.classList.remove('hidden');
+    generateBtn.disabled = false;
   }
 }
 
-function convertToBlackAndWhite(imageData) {
-  const { data, width, height } = imageData;
-  const bwData = new Uint8Array(width * height);
+function createSimplifiedSvg(imageData, width, height) {
+  // Create a simpler SVG version using edge detection
+  const { data } = imageData;
+  const threshold = 128;
+  const svgPaths = [];
+  const pixelSize = Math.max(1, Math.floor(width / 100)); // Reduce resolution for performance
   
-  // Simple thresholding to convert to black and white
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
+  // Sample pixels and create simple rectangles for edges
+  for (let y = 0; y < height; y += pixelSize) {
+    for (let x = 0; x < width; x += pixelSize) {
       const idx = (y * width + x) * 4;
-      // Calculate grayscale value using RGB values
-      const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-      // Apply threshold to make it black or white
-      bwData[y * width + x] = gray < 128 ? 1 : 0;
-    }
-  }
-  
-  return { data: bwData, width, height };
-}
-
-// Simple function to create SVG from black and white image data
-function createSimpleSvg(bwData, width, height) {
-  const paths = findSimplePaths(bwData);
-  
-  let svgContent = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
-  
-  // Add paths to SVG
-  for (const path of paths) {
-    if (path.length > 5) { // Only keep paths with enough points
-      svgContent += `<path d="${pointsToSvgPath(path)}" fill="black" />`;
-    }
-  }
-  
-  svgContent += '</svg>';
-  return svgContent;
-}
-
-function pointsToSvgPath(points) {
-  if (points.length === 0) return '';
-  
-  let path = `M${points[0].x},${points[0].y}`;
-  
-  for (let i = 1; i < points.length; i++) {
-    path += ` L${points[i].x},${points[i].y}`;
-  }
-  
-  path += ' Z'; // Close the path
-  return path;
-}
-
-function findSimplePaths(bwData) {
-  const { data, width, height } = bwData;
-  const visited = new Array(width * height).fill(false);
-  const paths = [];
-  
-  // Find paths in the image using a simple algorithm
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
       
-      // Skip if already visited or not a black pixel
-      if (visited[idx] || data[idx] === 0) {
-        continue;
-      }
+      // Calculate grayscale value
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
       
-      // Start a new path with flood fill
-      const path = [];
-      const queue = [{x, y}];
-      visited[idx] = true;
-      
-      // Add starting point
-      path.push({x, y});
-      
-      // Find boundary pixels using a simple tracing algorithm
-      const dx = [1, 1, 0, -1, -1, -1, 0, 1];  // Direction vectors
-      const dy = [0, 1, 1, 1, 0, -1, -1, -1];
-      
-      while (queue.length > 0) {
-        const current = queue.shift();
-        let isBoundary = false;
-        
-        // Check if this is a boundary pixel by looking at neighbors
-        for (let i = 0; i < 8; i++) {
-          const nx = current.x + dx[i];
-          const ny = current.y + dy[i];
-          
-          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-            const nidx = ny * width + nx;
-            
-            if (data[nidx] === 0) {
-              // Found a white neighbor, so this is a boundary pixel
-              isBoundary = true;
-            } else if (!visited[nidx]) {
-              // This is a black pixel we haven't visited
-              visited[nidx] = true;
-              queue.push({x: nx, y: ny});
-            }
-          }
-        }
-        
-        if (isBoundary) {
-          // Only add boundary pixels to the path
-          path.push({x: current.x, y: current.y});
-        }
-      }
-      
-      // Simplify the path - only keep every Nth point to reduce complexity
-      const simplifiedPath = [];
-      const skipFactor = Math.max(1, Math.floor(path.length / 100)); // Adjust for desired detail
-      
-      for (let i = 0; i < path.length; i += skipFactor) {
-        simplifiedPath.push(path[i]);
-      }
-      
-      if (simplifiedPath.length > 0) {
-        paths.push(simplifiedPath);
+      // If the pixel is dark enough, add a rectangle to represent it
+      if (gray < threshold) {
+        svgPaths.push(`<rect x="${x}" y="${y}" width="${pixelSize}" height="${pixelSize}" fill="black" />`);
       }
     }
   }
   
-  return paths;
+  // Limit the number of paths to prevent browser freezing
+  const maxPaths = 5000;
+  const pathsToUse = svgPaths.length > maxPaths 
+    ? svgPaths.slice(0, maxPaths) 
+    : svgPaths;
+  
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+    ${pathsToUse.join('\n')}
+  </svg>`;
 }
 
 function handleDownload() {
